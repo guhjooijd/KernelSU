@@ -1,5 +1,4 @@
 #include <linux/capability.h>
-#include <linux/cred.h>
 #include <linux/dcache.h>
 #include <linux/err.h>
 #include <linux/init.h>
@@ -48,10 +47,6 @@
 #include "throne_tracker.h"
 #include "throne_tracker.h"
 #include "kernel_compat.h"
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0) || defined(KSU_COMPAT_GET_CRED_RCU)
-#define KSU_GET_CRED_RCU
-#endif
 
 #ifdef CONFIG_KSU_SUSFS
 bool susfs_is_allow_su(void)
@@ -397,9 +392,7 @@ int ksu_handle_prctl(int option, unsigned long arg2, unsigned long arg3,
 			pr_err("prctl reply error, cmd: %lu\n", arg2);
 		}
 		u32 version_flags = 0;
-#ifdef MODULE
 		version_flags |= 0x1;
-#endif
 		if (arg4 &&
 		    copy_to_user(arg4, &version_flags, sizeof(version_flags))) {
 			pr_err("prctl reply error, cmd: %lu\n", arg2);
@@ -1142,26 +1135,6 @@ static struct kprobe prctl_kp = {
 	.pre_handler = handler_pre,
 };
 
-static int renameat_handler_pre(struct kprobe *p, struct pt_regs *regs)
-{
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
-	// https://elixir.bootlin.com/linux/v5.12-rc1/source/include/linux/fs.h
-	struct renamedata *rd = PT_REGS_PARM1(regs);
-	struct dentry *old_entry = rd->old_dentry;
-	struct dentry *new_entry = rd->new_dentry;
-#else
-	struct dentry *old_entry = (struct dentry *)PT_REGS_PARM2(regs);
-	struct dentry *new_entry = (struct dentry *)PT_REGS_CCALL_PARM4(regs);
-#endif
-
-	return ksu_handle_rename(old_entry, new_entry);
-}
-
-static struct kprobe renameat_kp = {
-	.symbol_name = "vfs_rename",
-	.pre_handler = renameat_handler_pre,
-};
-
 __maybe_unused int ksu_kprobe_init(void)
 {
 	int rc = 0;
@@ -1241,6 +1214,27 @@ void __init ksu_lsm_hook_init(void)
 }
 
 #else
+// keep renameat_handler for LKM support
+ static int renameat_handler_pre(struct kprobe *p, struct pt_regs *regs)
+ {
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
+ 	// https://elixir.bootlin.com/linux/v5.12-rc1/source/include/linux/fs.h
+ 	struct renamedata *rd = PT_REGS_PARM1(regs);
+ 	struct dentry *old_entry = rd->old_dentry;
+ 	struct dentry *new_entry = rd->new_dentry;
+ #else
+ 	struct dentry *old_entry = (struct dentry *)PT_REGS_PARM2(regs);
+ 	struct dentry *new_entry = (struct dentry *)PT_REGS_CCALL_PARM4(regs);
+ #endif
+ 
+ 	return ksu_handle_rename(old_entry, new_entry);
+ }
+ 
+ static struct kprobe renameat_kp = {
+ 	.symbol_name = "vfs_rename",
+ 	.pre_handler = renameat_handler_pre,
+ };
+ 
 static int override_security_head(void *head, const void *new_head, size_t len)
 {
 	unsigned long base = (unsigned long)head & PAGE_MASK;
